@@ -1,0 +1,6 @@
+# Sites collected each day with iptv-org/epg, for channels the epgshare01 files miss. One per line.
+osn.com
+shahid.mbc.net
+elcinema.com
+dazn.com
+bein.com

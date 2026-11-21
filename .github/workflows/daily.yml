@@ -1,0 +1,54 @@
+name: Daily guide
+on:
+  schedule:
+    - cron: '30 12 * * *'      # after epgshare01's daily update (~11:40 UTC)
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Get the collector (iptv-org/epg)
+        run: |
+          git clone --depth 1 https://github.com/iptv-org/epg.git collector
+          cd collector && npm ci --no-audit --no-fund
+      - name: Collect sites
+        continue-on-error: true
+        run: |
+          mkdir -p src
+          grep -v '^#' sites.txt | grep . | while read -r s; do
+            echo "::group::$s"
+            opts="--maxConnections=5"
+            case "$s" in elcinema.com) opts="--maxConnections=1 --delay=1500";; esac
+            (cd collector && timeout 40m npm run grab --silent -- --sites="$s" --days=2 $opts --output="../src/$s.xml") || echo "$s failed"
+            echo "::endgroup::"
+          done
+      - name: Download epgshare01
+        run: curl -sfL -A "Mozilla/5.0" -o src/epgshare.xml.gz https://epgshare01.online/epgshare01/epg_ripper_ALL_SOURCES1.xml.gz
+      - name: Build
+        run: python3 build.py site src/*
+      - name: Add the front page
+        run: cp README.md site/README.md
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
