@@ -63,22 +63,60 @@ def read(path, chans, progs, srcs):
 
 
 NAMES = {}
+CHECKED = set()                                  # epgshare beIN channels whose times were checked against beIN's own
+
+
+def norm(t):
+    return re.sub(r'\s+', ' ', re.split(r' - ', t.lower())[0].replace(' v ', ' vs ')).strip()
+
+
+def chan(c, names):
+    """The same beIN channel in both: "beIN_SPORTS1_ENGLISH_Digital_Mono_AR.bein" and "beINSPORTS1EN" are en1."""
+    s = (c + ' ' + ' '.join(names.get(c, []))).lower()
+    m = re.search(r'bein_?sports?_?(max_?|xtra_?)?(\d+)_?(english|french|en\b|fr\b)?', s)
+    if not m:
+        return None
+    return (m.group(1) or '').strip('_') + (m.group(3) or '')[:2] + m.group(2)
+
+
+def tidy(p):
+    """Drops programmes that start while the one before is still on (beIN's own feed sometimes mixes two lists)."""
+    end = None
+    for k in sorted(p, key=lambda k: p[k][0]):
+        row = p[k]
+        if end is not None and row[0] < end - 5:
+            del p[k]
+            continue
+        end = row[0] + row[1]
+
+
+def fill_bein(progs, srcs):
+    """Gaps in beIN's own schedule (bein.com) filled from epgshare's copy of the same channel, once its times are
+    corrected: beIN SPORTS 6 had nothing in beIN's own feed until late evening on 22 Nov 2026."""
+    other = {}
+    for c in progs:
+        if c in CHECKED and '_AR' in c:
+            other.setdefault(chan(c, NAMES), c)
+    n = 0
+    for c, p in progs.items():
+        if srcs.get(c) != 'bein.com' or not p:
+            continue
+        o = other.get(chan(c, NAMES))
+        if not o:
+            continue
+        spans = sorted((r[0], r[0] + r[1]) for r in p.values())
+        for row in progs[o].values():
+            a, b = row[0], row[0] + row[1]
+            if all(b <= x + 5 or a >= y - 5 for x, y in spans):
+                p[BASE + row[0] * 60 + 0.5] = list(row)
+                n += 1
+    print(f'beIN gaps filled with {n} programmes', flush=True)
 
 
 def fix_bein(progs, srcs):
     """epgshare's beIN MENA listings (ids ending .bein) run late on some channels against beIN's own (bein.com):
     two hours on beIN SPORTS 1-9, none on XTRA (Nov 2026). The offset is measured each day, channel by channel, from
     programmes both list; a channel moves only when most of its matches agree on one offset."""
-    def norm(t):
-        return re.sub(r'\s+', ' ', re.split(r' - ', t.lower())[0].replace(' v ', ' vs ')).strip()
-
-    def chan(c, names):
-        """The same beIN channel in both: "beIN_SPORTS1_ENGLISH_Digital_Mono_AR.bein" and "beINSPORTS1EN" are en1."""
-        s = (c + ' ' + ' '.join(names.get(c, []))).lower()
-        m = re.search(r'bein_?sports?_?(max_?|xtra_?)?(\d+)_?(english|french|en\b|fr\b)?', s)
-        if not m:
-            return None
-        return (m.group(1) or '').strip('_') + (m.group(3) or '')[:2] + m.group(2)
     own = {}
     for c, p in progs.items():
         if srcs.get(c) == 'bein.com':
@@ -100,11 +138,15 @@ def fix_bein(progs, srcs):
         if len(diffs) < 5:
             continue
         off = max(set(diffs), key=diffs.count)
-        if off and diffs.count(off) >= 0.6 * len(diffs):
+        if diffs.count(off) < 0.6 * len(diffs):
+            continue
+        CHECKED.add(c)
+        if off:
             for row in p.values():
                 row[0] -= off
             fixed.append(f'{c} {off:+d}')
-    print(f'beIN times corrected on {len(fixed)} channels: ' + ', '.join(fixed[:12]), flush=True)
+    print(f'beIN times checked on {len(CHECKED)} channels, corrected on {len(fixed)}: ' + ', '.join(fixed[:12]), flush=True)
+
 
 def main():
     out, files = sys.argv[1], sys.argv[2:]
@@ -116,7 +158,14 @@ def main():
         except Exception as e:                       # one broken source never stops the guide
             print(f'{os.path.basename(f)}: skipped ({e})', flush=True)
     NAMES.update(chans)
+    for c in progs:
+        if srcs.get(c) == 'bein.com':
+            tidy(progs[c])
     fix_bein(progs, srcs)
+    for c in progs:
+        if c.endswith('.bein'):
+            tidy(progs[c])
+    fill_bein(progs, srcs)
     ids = sorted((c for c in chans if progs.get(c)), key=lambda c: (c.rsplit('.', 1)[-1].lower(), c.lower()))
     os.makedirs(os.path.join(out, 'p'), exist_ok=True)
     index = []
@@ -124,7 +173,7 @@ def main():
         pack = i // PACK
         body = {'_v': NOW}                          # the build, so Slate can tell a pack from a newer build
         for c in ids[i:i + PACK]:
-            body[c] = [progs[c][k] for k in sorted(progs[c])]
+            body[c] = sorted(progs[c].values(), key=lambda r: r[0])
             index.append([c, chans[c] or [c], pack] + ([srcs[c]] if c in srcs else []))
         with open(os.path.join(out, 'p', f'{pack}.json'), 'w', encoding='utf-8') as fh:
             json.dump(body, fh, ensure_ascii=False, separators=(',', ':'))
