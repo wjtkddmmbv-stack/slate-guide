@@ -6,7 +6,7 @@ channel index and packs of ~60 channels each, so a TV only downloads what it sho
 
 Output:
   meta.json        {"v": build time}                       (tiny; lets Slate check for a new guide)
-  index.json       {"v", "base", "ch": [[id, [names], pack], ...]}
+  index.json       {"v", "base", "ch": [[id, [names], pack, source?], ...]}   source: the collector site (osn.com…), if any
   p/<n>.json       {"<id>": [[start, minutes, title, description], ...]}   start = minutes after "base"
 Times are UTC. Channels without programmes in the window are left out. Uses only the standard library."""
 import calendar, gzip, json, os, re, sys, time
@@ -32,7 +32,9 @@ def when(s):
     return t
 
 
-def read(path, chans, progs):
+def read(path, chans, progs, srcs):
+    site = os.path.basename(path).replace('.xml.gz', '').replace('.xml', '')
+    site = '' if site.startswith('epgshare') else site
     f = gzip.open(path) if path.endswith('.gz') else open(path, 'rb')
     n = 0
     for _, el in iterparse(f):
@@ -42,6 +44,7 @@ def read(path, chans, progs):
             if cid:
                 old = chans.get(cid)
                 chans[cid] = list(dict.fromkeys((old or []) + names))
+                if site: srcs.setdefault(cid, site)
             el.clear()
         elif el.tag == 'programme':
             st, sp = when(el.get('start')), when(el.get('stop'))
@@ -61,10 +64,10 @@ def read(path, chans, progs):
 
 def main():
     out, files = sys.argv[1], sys.argv[2:]
-    chans, progs = {}, {}
+    chans, progs, srcs = {}, {}, {}
     for f in files:
         try:
-            n = read(f, chans, progs)
+            n = read(f, chans, progs, srcs)
             print(f'{os.path.basename(f)}: {n} programmes', flush=True)
         except Exception as e:                       # one broken source never stops the guide
             print(f'{os.path.basename(f)}: skipped ({e})', flush=True)
@@ -76,7 +79,7 @@ def main():
         body = {}
         for c in ids[i:i + PACK]:
             body[c] = [progs[c][k] for k in sorted(progs[c])]
-            index.append([c, chans[c] or [c], pack])
+            index.append([c, chans[c] or [c], pack] + ([srcs[c]] if c in srcs else []))
         with open(os.path.join(out, 'p', f'{pack}.json'), 'w', encoding='utf-8') as fh:
             json.dump(body, fh, ensure_ascii=False, separators=(',', ':'))
     with open(os.path.join(out, 'index.json'), 'w', encoding='utf-8') as fh:
