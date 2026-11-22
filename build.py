@@ -8,6 +8,7 @@ Output:
   meta.json        {"v": build time}                       (tiny; lets Slate check for a new guide)
   index.json       {"v", "base", "ch": [[id, [names], pack, source?], ...]}   source: the collector site (osn.com…), if any
   p/<n>.json       {"_v": build, "<id>": [[start, minutes, title, description], ...]}   start = minutes after "base"
+  m.json           {"v", "base", "p": {"<id>": [[start, minutes, title], ...]}}   games and live events only (match pages)
 Times are UTC. Channels without programmes in the window are left out. Uses only the standard library."""
 import calendar, gzip, json, os, re, sys, time
 from xml.etree.ElementTree import iterparse
@@ -148,6 +149,31 @@ def fix_bein(progs, srcs):
     print(f'beIN times checked on {len(CHECKED)} channels, corrected on {len(fixed)}: ' + ', '.join(fixed[:12]), flush=True)
 
 
+FIXTURE = re.compile(r"(?i)\b[\w'.]+\s+(?:vs?\.?|@)\s+[\w']")
+SPORTY = re.compile(r"(?i)\b(darts|snooker|golf|tennis|nfl|nba|nhl|mlb|ufc|boxing|cricket|formula 1|grand prix|motogp|cyclocross|redzone|red zone|wwe|rugby)\b")
+
+
+def matches(out, ids, progs):
+    """m.json: only the programmes that are a game or another live event ("Liverpool vs Manchester United", "Live
+    Grand Slam Of Darts"), so a match page can find which channels show a game without loading every pack.
+    US local stations (they only say "NFL Football") are left out."""
+    p = {}
+    for c in ids:
+        if '.us_locals' in c:
+            continue
+        keep = []
+        for row in sorted(progs[c].values(), key=lambda r: r[0]):
+            if FIXTURE.search(row[2]):
+                keep.append([row[0], row[1], row[2][:60]])
+            elif SPORTY.search(row[2]):
+                keep.append([row[0], row[1], row[2][:40]])
+        if keep:
+            p[c] = keep
+    with open(os.path.join(out, 'm.json'), 'w', encoding='utf-8') as fh:
+        json.dump({'v': NOW, 'base': BASE, 'p': p}, fh, ensure_ascii=False, separators=(',', ':'))
+    print(f'm.json: {sum(len(v) for v in p.values())} programmes on {len(p)} channels', flush=True)
+
+
 def main():
     out, files = sys.argv[1], sys.argv[2:]
     chans, progs, srcs = {}, {}, {}
@@ -177,6 +203,7 @@ def main():
             index.append([c, chans[c] or [c], pack] + ([srcs[c]] if c in srcs else []))
         with open(os.path.join(out, 'p', f'{pack}.json'), 'w', encoding='utf-8') as fh:
             json.dump(body, fh, ensure_ascii=False, separators=(',', ':'))
+    matches(out, ids, progs)
     with open(os.path.join(out, 'index.json'), 'w', encoding='utf-8') as fh:
         json.dump({'v': NOW, 'base': BASE, 'ch': index}, fh, ensure_ascii=False, separators=(',', ':'))
     with open(os.path.join(out, 'meta.json'), 'w') as fh:
