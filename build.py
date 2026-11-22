@@ -7,7 +7,7 @@ channel index and packs of ~60 channels each, so a TV only downloads what it sho
 Output:
   meta.json        {"v": build time}                       (tiny; lets Slate check for a new guide)
   index.json       {"v", "base", "ch": [[id, [names], pack, source?], ...]}   source: the collector site (osn.com…), if any
-  p/<n>.json       {"<id>": [[start, minutes, title, description], ...]}   start = minutes after "base"
+  p/<n>.json       {"_v": build, "<id>": [[start, minutes, title, description], ...]}   start = minutes after "base"
 Times are UTC. Channels without programmes in the window are left out. Uses only the standard library."""
 import calendar, gzip, json, os, re, sys, time
 from xml.etree.ElementTree import iterparse
@@ -122,7 +122,7 @@ def main():
     index = []
     for i in range(0, len(ids), PACK):
         pack = i // PACK
-        body = {}
+        body = {'_v': NOW}                          # the build, so Slate can tell a pack from a newer build
         for c in ids[i:i + PACK]:
             body[c] = [progs[c][k] for k in sorted(progs[c])]
             index.append([c, chans[c] or [c], pack] + ([srcs[c]] if c in srcs else []))
