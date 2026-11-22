@@ -62,6 +62,50 @@ def read(path, chans, progs, srcs):
     return n
 
 
+NAMES = {}
+
+
+def fix_bein(progs, srcs):
+    """epgshare's beIN MENA listings (ids ending .bein) run late on some channels against beIN's own (bein.com):
+    two hours on beIN SPORTS 1-9, none on XTRA (Nov 2026). The offset is measured each day, channel by channel, from
+    programmes both list; a channel moves only when most of its matches agree on one offset."""
+    def norm(t):
+        return re.sub(r'\s+', ' ', re.split(r' - ', t.lower())[0].replace(' v ', ' vs ')).strip()
+
+    def chan(c, names):
+        """The same beIN channel in both: "beIN_SPORTS1_ENGLISH_Digital_Mono_AR.bein" and "beINSPORTS1EN" are en1."""
+        s = (c + ' ' + ' '.join(names.get(c, []))).lower()
+        m = re.search(r'bein_?sports?_?(max_?|xtra_?)?(\d+)_?(english|french|en\b|fr\b)?', s)
+        if not m:
+            return None
+        return (m.group(1) or '').strip('_') + (m.group(3) or '')[:2] + m.group(2)
+    own = {}
+    for c, p in progs.items():
+        if srcs.get(c) == 'bein.com':
+            k = chan(c, NAMES)
+            if k:
+                for row in p.values():
+                    own.setdefault((k, norm(row[2])), []).append(row[0])
+    fixed = []
+    for c, p in progs.items():
+        if not c.endswith('.bein') or c in srcs:
+            continue
+        k, diffs = chan(c, NAMES), []
+        for row in p.values():
+            starts = own.get((k, norm(row[2])))
+            if starts:
+                d = min(starts, key=lambda x: abs(x - row[0]))
+                if abs(row[0] - d) <= 360:
+                    diffs.append(round((row[0] - d) / 15) * 15)
+        if len(diffs) < 5:
+            continue
+        off = max(set(diffs), key=diffs.count)
+        if off and diffs.count(off) >= 0.6 * len(diffs):
+            for row in p.values():
+                row[0] -= off
+            fixed.append(f'{c} {off:+d}')
+    print(f'beIN times corrected on {len(fixed)} channels: ' + ', '.join(fixed[:12]), flush=True)
+
 def main():
     out, files = sys.argv[1], sys.argv[2:]
     chans, progs, srcs = {}, {}, {}
@@ -71,6 +115,8 @@ def main():
             print(f'{os.path.basename(f)}: {n} programmes', flush=True)
         except Exception as e:                       # one broken source never stops the guide
             print(f'{os.path.basename(f)}: skipped ({e})', flush=True)
+    NAMES.update(chans)
+    fix_bein(progs, srcs)
     ids = sorted((c for c in chans if progs.get(c)), key=lambda c: (c.rsplit('.', 1)[-1].lower(), c.lower()))
     os.makedirs(os.path.join(out, 'p'), exist_ok=True)
     index = []
