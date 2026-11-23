@@ -191,7 +191,7 @@ def drop_copies(progs, names, srcs):
                 post.setdefault(x, []).append(c)
         pairs = {}
         for cs in post.values():
-            if 1 < len(cs) < 30:
+            if 1 < len(cs) < 1000:
                 for i in range(len(cs)):
                     for j in range(i + 1, len(cs)):
                         k = (cs[i], cs[j]) if cs[i] < cs[j] else (cs[j], cs[i])
