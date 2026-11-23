@@ -149,6 +149,76 @@ def fix_bein(progs, srcs):
     print(f'beIN times checked on {len(CHECKED)} channels, corrected on {len(fixed)}: ' + ', '.join(fixed[:12]), flush=True)
 
 
+ARAB_FEEDS = {'ae', 'sa', 'eg', 'qa', 'kw', 'bh', 'om', 'jo', 'lb', 'iq', 'ma', 'dz', 'tn', 'ly', 'sy', 'ps', 'ye', 'sd'}
+
+
+def name_key(c, names):
+    n = (names.get(c) or [c])[0].lower()
+    n = re.sub(r'^\s*[a-z]{2,3}\s*:\s*', '', n)
+    n = re.sub(r'\b(uhd|fhd|hd|sd|4k|tv|channel)\b', ' ', n)
+    n = n.replace('sports', 'sport').replace('abu dhabi', 'ad')
+    return re.sub(r'[^a-z0-9\u0600-\u06ff]', '', n)
+
+
+GENERIC = {'sport', 'sports', 'news', 'channel', 'drama', 'cinema', 'aflam', 'music', 'live', 'kids', 'family', 'arabic', 'arabia', 'mubasher', 'plus', 'extra'}
+
+
+def owns(c, names, titles):
+    """The schedule names this channel ("On Time Stadium" on ON Time Sports): it's this channel's own."""
+    words = [w for w in re.findall(r'[a-z]{4,}', (names.get(c) or [c])[0].lower()) if w not in GENERIC]
+    return any(w in t for w in words for t in titles)
+
+
+def drop_copies(progs, names, srcs):
+    """Channels in epgshare's Arab guides (ids ending .ae, .sa…) that carry another channel's schedule word for word:
+    "KSA sports 1" had a cartoon channel's, "KSA Sports 3" ON Time Sports', Zamalek TV Alkass One's (Nov 2026).
+    A channel the schedule names ("On Time Stadium" on ON Time Sports), or the one sports channel among them when it
+    lists games, keeps it; otherwise there's no telling which
+    is right, so all of them are left out (Slate then shows no guide for them rather than a wrong one). Copies of one
+    channel (HD and SD, "AD Sports 1" and "Abu Dhabi Sports 1") are kept."""
+    feeds = {}
+    for c, p in progs.items():
+        feed = c.rsplit('.', 1)[-1].split('@')[0].lower()
+        if feed in ARAB_FEEDS and c not in srcs and len(p) >= 8:
+            feeds.setdefault(feed, []).append(c)
+    drop, sig_all = {}, {}
+    for feed, ids in feeds.items():
+        sig = {c: {(r[0], r[2].strip().lower()) for r in progs[c].values()} for c in ids}
+        sig_all.update(sig)
+        post = {}
+        for c in ids:
+            for x in sig[c]:
+                post.setdefault(x, []).append(c)
+        pairs = {}
+        for cs in post.values():
+            if 1 < len(cs) < 30:
+                for i in range(len(cs)):
+                    for j in range(i + 1, len(cs)):
+                        k = (cs[i], cs[j]) if cs[i] < cs[j] else (cs[j], cs[i])
+                        pairs[k] = pairs.get(k, 0) + 1
+        for (a, b), n in pairs.items():
+            if n >= 0.9 * min(len(sig[a]), len(sig[b])) and name_key(a, names) != name_key(b, names):
+                drop.setdefault(a, set()).add(b)
+                drop.setdefault(b, set()).add(a)
+    def sporty(c):
+        return bool(re.search(r'sport|bein|alkass|ssc', (names.get(c) or [c])[0].lower()))
+    kept = []
+    for c in list(drop):
+        titles = {t for _, t in sig_all[c]}
+        if owns(c, names, titles) and not any(owns(o, names, titles) for o in drop[c]):
+            kept.append(c)
+        # Games ("Iran Vs Italy") on the one sports channel of the group: the sports channel's own (beIN SPORTS).
+        elif sporty(c) and not any(sporty(o) for o in drop[c]) and sum(1 for t in titles if FIXTURE.search(t)) >= 3:
+            kept.append(c)
+    for c in kept:
+        del drop[c]
+    for c in drop:
+        progs[c] = {}
+    print(f'kept as the owner of a copied schedule: ' + ', '.join(sorted(kept)), flush=True)
+    print(f'copied schedules left out on {len(drop)} channels: ' + ', '.join(sorted(drop)[:40]), flush=True)
+    return drop
+
+
 FIXTURE = re.compile(r"(?i)\b[\w'.]+\s+(?:vs?\.?|@)\s+[\w']")
 SPORTY = re.compile(r"(?i)\b(darts|snooker|golf|tennis|nfl|nba|nhl|mlb|ufc|boxing|cricket|formula 1|grand prix|motogp|cyclocross|redzone|red zone|wwe|rugby)\b")
 
@@ -192,6 +262,7 @@ def main():
         if c.endswith('.bein'):
             tidy(progs[c])
     fill_bein(progs, srcs)
+    drop_copies(progs, NAMES, srcs)
     ids = sorted((c for c in chans if progs.get(c)), key=lambda c: (c.rsplit('.', 1)[-1].lower(), c.lower()))
     os.makedirs(os.path.join(out, 'p'), exist_ok=True)
     index = []
